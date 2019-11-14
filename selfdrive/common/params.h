@@ -7,6 +7,8 @@
 extern "C" {
 #endif
 
+#define ERR_NO_VALUE -33
+
 int write_db_value(const char* params_path, const char* key, const char* value,
                    size_t value_size);
 
@@ -23,6 +25,10 @@ int write_db_value(const char* params_path, const char* key, const char* value,
 int read_db_value(const char* params_path, const char* key, char** value,
                   size_t* value_sz);
 
+// Delete a value from the params database.
+// Inputs are the same as read_db_value, without value and value_sz.
+int delete_db_value(const char* params_path, const char* key);
+
 // Reads a value from the params database, blocking until successful.
 // Inputs are the same as read_db_value.
 void read_db_value_blocking(const char* params_path, const char* key,
@@ -30,6 +36,12 @@ void read_db_value_blocking(const char* params_path, const char* key,
 
 #ifdef __cplusplus
 }  // extern "C"
+#endif
+
+#ifdef __cplusplus
+#include <map>
+#include <string>
+int read_db_all(const char* params_path, std::map<std::string, std::string> *params);
 #endif
 
 #endif  // _SELFDRIVE_COMMON_PARAMS_H_

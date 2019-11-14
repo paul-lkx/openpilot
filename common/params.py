@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """ROS has a parameter server, we have files.
 
 The parameter store is a persistent key value store, implemented as a directory with a writer lock.
@@ -27,7 +27,9 @@ import sys
 import shutil
 import fcntl
 import tempfile
+import threading
 from enum import Enum
+
 
 def mkdirs_exists_ok(path):
   try:
@@ -36,39 +38,65 @@ def mkdirs_exists_ok(path):
     if not os.path.isdir(path):
       raise
 
+
 class TxType(Enum):
-  PERSISTANT = 1
+  PERSISTENT = 1
   CLEAR_ON_MANAGER_START = 2
-  CLEAR_ON_CAR_START = 3
+  CLEAR_ON_PANDA_DISCONNECT = 3
+
 
 class UnknownKeyName(Exception):
   pass
 
-keys = {
-# written: manager
-# read:    loggerd, uploaderd, baseui
-  "DongleId": TxType.PERSISTANT,
-  "AccessToken": TxType.PERSISTANT,
-  "Version": TxType.PERSISTANT,
-  "GitCommit": TxType.PERSISTANT,
-  "GitBranch": TxType.PERSISTANT,
-# written: baseui
-# read:    ui, controls
-  "IsMetric": TxType.PERSISTANT,
-  "IsRearViewMirror": TxType.PERSISTANT,
-  "IsFcwEnabled": TxType.PERSISTANT,
-# written: visiond
-# read:    visiond, controlsd
-  "CalibrationParams": TxType.PERSISTANT,
-# written: visiond
-# read:    visiond, ui
-  "CloudCalibration": TxType.PERSISTANT,
-# written: controlsd
-# read:    radard
-  "CarParams": TxType.CLEAR_ON_CAR_START,
 
-  "Passive": TxType.PERSISTANT,
+keys = {
+  "AccessToken": [TxType.PERSISTENT],
+  "AthenadPid": [TxType.PERSISTENT],
+  "CalibrationParams": [TxType.PERSISTENT],
+  "CarParams": [TxType.CLEAR_ON_MANAGER_START, TxType.CLEAR_ON_PANDA_DISCONNECT],
+  "CarVin": [TxType.CLEAR_ON_MANAGER_START, TxType.CLEAR_ON_PANDA_DISCONNECT],
+  "CompletedTrainingVersion": [TxType.PERSISTENT],
+  "ControlsParams": [TxType.PERSISTENT],
+  "DoUninstall": [TxType.CLEAR_ON_MANAGER_START],
+  "DongleId": [TxType.PERSISTENT],
+  "GitBranch": [TxType.PERSISTENT],
+  "GitCommit": [TxType.PERSISTENT],
+  "GitRemote": [TxType.PERSISTENT],
+  "GithubSshKeys": [TxType.PERSISTENT],
+  "HasAcceptedTerms": [TxType.PERSISTENT],
+  "HasCompletedSetup": [TxType.PERSISTENT],
+  "IsGeofenceEnabled": [TxType.PERSISTENT],
+  "IsMetric": [TxType.PERSISTENT],
+  "IsRHD": [TxType.PERSISTENT],
+  "IsUpdateAvailable": [TxType.PERSISTENT],
+  "IsUploadRawEnabled": [TxType.PERSISTENT],
+  "IsUploadVideoOverCellularEnabled": [TxType.PERSISTENT],
+  "LastUpdateTime": [TxType.PERSISTENT],
+  "LimitSetSpeed": [TxType.PERSISTENT],
+  "LimitSetSpeedNeural": [TxType.PERSISTENT],
+  "LiveParameters": [TxType.PERSISTENT],
+  "LongitudinalControl": [TxType.PERSISTENT],
+  "OpenpilotEnabledToggle": [TxType.PERSISTENT],
+  "PandaFirmware": [TxType.CLEAR_ON_MANAGER_START, TxType.CLEAR_ON_PANDA_DISCONNECT],
+  "PandaDongleId": [TxType.CLEAR_ON_MANAGER_START, TxType.CLEAR_ON_PANDA_DISCONNECT],
+  "Passive": [TxType.PERSISTENT],
+  "RecordFront": [TxType.PERSISTENT],
+  "ReleaseNotes": [TxType.PERSISTENT],
+  "ShouldDoUpdate": [TxType.CLEAR_ON_MANAGER_START],
+  "SpeedLimitOffset": [TxType.PERSISTENT],
+  "SubscriberInfo": [TxType.PERSISTENT],
+  "TermsVersion": [TxType.PERSISTENT],
+  "TrainingVersion": [TxType.PERSISTENT],
+  "UpdateAvailable": [TxType.CLEAR_ON_MANAGER_START],
+  "Version": [TxType.PERSISTENT],
+  "Offroad_ChargeDisabled": [TxType.CLEAR_ON_MANAGER_START, TxType.CLEAR_ON_PANDA_DISCONNECT],
+  "Offroad_ConnectivityNeeded": [TxType.CLEAR_ON_MANAGER_START],
+  "Offroad_ConnectivityNeededPrompt": [TxType.CLEAR_ON_MANAGER_START],
+  "Offroad_TemperatureTooHigh": [TxType.CLEAR_ON_MANAGER_START],
+  "Offroad_PandaFirmwareMismatch": [TxType.CLEAR_ON_MANAGER_START, TxType.CLEAR_ON_PANDA_DISCONNECT],
+  "Offroad_InvalidTime": [TxType.CLEAR_ON_MANAGER_START],
 }
+
 
 def fsync_dir(path):
   fd = os.open(path, os.O_RDONLY)
@@ -78,7 +106,7 @@ def fsync_dir(path):
     os.close(fd)
 
 
-class FileLock(object):
+class FileLock():
   def __init__(self, path, create):
     self._path = path
     self._create = create
@@ -94,7 +122,7 @@ class FileLock(object):
       self._fd = None
 
 
-class DBAccessor(object):
+class DBAccessor():
   def __init__(self, path):
     self._path = path
     self._vals = None
@@ -223,7 +251,7 @@ class DBWriter(DBAccessor):
         data_path = self._data_path()
         try:
           old_data_path = os.path.join(self._path, os.readlink(data_path))
-        except (OSError, IOError) as e:
+        except (OSError, IOError):
           # NOTE(mgraczyk): If other DB implementations have bugs, this could cause
           #                 copies to be left behind, but we still want to overwrite.
           pass
@@ -255,57 +283,107 @@ class DBWriter(DBAccessor):
       self._lock = None
 
 
+def read_db(params_path, key):
+  path = "%s/d/%s" % (params_path, key)
+  try:
+    with open(path, "rb") as f:
+      return f.read()
+  except IOError:
+    return None
 
-class JSDB(object):
-  def __init__(self, fn):
-    self._fn = fn
+def write_db(params_path, key, value):
+  if isinstance(value, str):
+    value = value.encode('utf8')
 
-  def begin(self, write=False):
-    if write:
-      return DBWriter(self._fn)
-    else:
-      return DBReader(self._fn)
+  prev_umask = os.umask(0)
+  lock = FileLock(params_path+"/.lock", True)
+  lock.acquire()
 
-class Params(object):
+  try:
+    tmp_path = tempfile.mktemp(prefix=".tmp", dir=params_path)
+    with open(tmp_path, "wb") as f:
+      f.write(value)
+      f.flush()
+      os.fsync(f.fileno())
+
+    path = "%s/d/%s" % (params_path, key)
+    os.rename(tmp_path, path)
+    fsync_dir(os.path.dirname(path))
+  finally:
+    os.umask(prev_umask)
+    lock.release()
+
+class Params():
   def __init__(self, db='/data/params'):
-    self.env = JSDB(db)
+    self.db = db
+
+    # create the database if it doesn't exist...
+    if not os.path.exists(self.db+"/d"):
+      with self.transaction(write=True):
+        pass
+
+  def transaction(self, write=False):
+    if write:
+      return DBWriter(self.db)
+    else:
+      return DBReader(self.db)
 
   def _clear_keys_with_type(self, tx_type):
-    with self.env.begin(write=True) as txn:
+    with self.transaction(write=True) as txn:
       for key in keys:
-        if keys[key] == tx_type:
+        if tx_type in keys[key]:
           txn.delete(key)
 
   def manager_start(self):
     self._clear_keys_with_type(TxType.CLEAR_ON_MANAGER_START)
 
-  def car_start(self):
-    self._clear_keys_with_type(TxType.CLEAR_ON_CAR_START)
+  def panda_disconnect(self):
+    self._clear_keys_with_type(TxType.CLEAR_ON_PANDA_DISCONNECT)
 
   def delete(self, key):
-    with self.env.begin(write=True) as txn:
+    with self.transaction(write=True) as txn:
       txn.delete(key)
 
-  def get(self, key, block=False):
+  def get(self, key, block=False, encoding=None):
     if key not in keys:
       raise UnknownKeyName(key)
 
     while 1:
-      with self.env.begin() as txn:
-        ret = txn.get(key)
+      ret = read_db(self.db, key)
       if not block or ret is not None:
         break
       # is polling really the best we can do?
       time.sleep(0.05)
+
+    if ret is not None and encoding is not None:
+      ret = ret.decode(encoding)
+
     return ret
 
   def put(self, key, dat):
+    """
+    Warning: This function blocks until the param is written to disk!
+    In very rare cases this can take over a second, and your code will hang.
+
+    Use the put_nonblocking helper function in time sensitive code, but
+    in general try to avoid writing params as much as possible.
+    """
+
     if key not in keys:
       raise UnknownKeyName(key)
 
-    with self.env.begin(write=True) as txn:
-      txn.put(key, dat)
-    print "set", key
+    write_db(self.db, key, dat)
+
+
+def put_nonblocking(key, val):
+  def f(key, val):
+    params = Params()
+    params.put(key, val)
+
+  t = threading.Thread(target=f, args=(key, val))
+  t.start()
+  return t
+
 
 if __name__ == "__main__":
   params = Params()
@@ -315,11 +393,11 @@ if __name__ == "__main__":
     for k in keys:
       pp = params.get(k)
       if pp is None:
-        print k, "is None"
+        print("%s is None" % k)
       elif all(ord(c) < 128 and ord(c) >= 32 for c in pp):
-        print k, pp
+        print("%s = %s" % (k, pp))
       else:
-        print k, pp.encode("hex")
+        print("%s = %s" % (k, pp.encode("hex")))
 
   # Test multiprocess:
   # seq 0 100000 | xargs -P20 -I{} python common/params.py DongleId {} && sleep 0.05

@@ -1,6 +1,7 @@
 #ifndef COMMON_UTIL_H
 #define COMMON_UTIL_H
 
+#include <stdio.h>
 
 #ifndef __cplusplus
 
@@ -24,6 +25,8 @@
 
 #define ARRAYSIZE(x) (sizeof(x)/sizeof(x[0]))
 
+#define ALIGN(x, align) (((x) + (align)-1) & ~((align)-1))
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -35,6 +38,8 @@ extern "C" {
 void* read_file(const char* path, size_t* out_len);
 
 void set_thread_name(const char* name);
+
+int set_realtime_priority(int level);
 
 #ifdef __cplusplus
 }

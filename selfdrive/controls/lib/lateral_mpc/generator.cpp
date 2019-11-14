@@ -4,7 +4,6 @@
 #define deg2rad(d) (d/180.0*PI)
 
 const int controlHorizon = 50;
-const double samplingTime = 0.05; // 20 Hz
 
 using namespace std;
 
@@ -24,8 +23,8 @@ int main( )
   OnlineData v_ref; // m/s
   OnlineData l_poly_r0, l_poly_r1, l_poly_r2, l_poly_r3;
   OnlineData r_poly_r0, r_poly_r1, r_poly_r2, r_poly_r3;
-  OnlineData p_poly_r0, p_poly_r1, p_poly_r2, p_poly_r3;
-  OnlineData l_prob, r_prob, p_prob;
+  OnlineData d_poly_r0, d_poly_r1, d_poly_r2, d_poly_r3;
+  OnlineData l_prob, r_prob;
   OnlineData lane_width;
 
   Control t;
@@ -40,79 +39,80 @@ int main( )
 
   auto poly_l = l_poly_r0*(xx*xx*xx) + l_poly_r1*(xx*xx) + l_poly_r2*xx + l_poly_r3;
   auto poly_r = r_poly_r0*(xx*xx*xx) + r_poly_r1*(xx*xx) + r_poly_r2*xx + r_poly_r3;
-  auto poly_p = p_poly_r0*(xx*xx*xx) + p_poly_r1*(xx*xx) + p_poly_r2*xx + p_poly_r3;
+  auto poly_d = d_poly_r0*(xx*xx*xx) + d_poly_r1*(xx*xx) + d_poly_r2*xx + d_poly_r3;
 
-  auto angle_l = atan(3*l_poly_r0*xx*xx + 2*l_poly_r1*xx + l_poly_r2);
-  auto angle_r = atan(3*r_poly_r0*xx*xx + 2*r_poly_r1*xx + r_poly_r2);
-  auto angle_p = atan(3*p_poly_r0*xx*xx + 2*p_poly_r1*xx + p_poly_r2);
+  auto angle_d = atan(3*d_poly_r0*xx*xx + 2*d_poly_r1*xx + d_poly_r2);
 
-  auto c_left_lane = exp(-(poly_l - yy));
-  auto c_right_lane = exp(poly_r - yy);
+  // When the lane is not visible, use an estimate of its position
+  auto weighted_left_lane = l_prob * poly_l + (1 - l_prob) * (poly_d + lane_width/2.0);
+  auto weighted_right_lane = r_prob * poly_r + (1 - r_prob) * (poly_d - lane_width/2.0);
 
-  auto r_phantom = poly_l - lane_width/2.0;
-  auto l_phantom = poly_r + lane_width/2.0;
-
-  auto path = lr_prob       * (l_prob * r_phantom + r_prob * l_phantom) / (l_prob + r_prob + 0.0001)
-              + (1-lr_prob) * poly_p;
-
-  auto angle = lr_prob      * (l_prob * angle_l + r_prob * angle_r) / (l_prob + r_prob + 0.0001)
-               + (1-lr_prob) * angle_p;
+  auto c_left_lane = exp(-(weighted_left_lane - yy));
+  auto c_right_lane = exp(weighted_right_lane - yy);
 
   // Running cost
   Function h;
 
   // Distance errors
-  h << path - yy;
-  h << l_prob * c_left_lane;
-  h << r_prob * c_right_lane;
+  h << poly_d - yy;
+  h << lr_prob * c_left_lane;
+  h << lr_prob * c_right_lane;
 
   // Heading error
-  h << (v_ref + 1.0 ) * (angle - psi);
+  h << (v_ref + 1.0 ) * (angle_d - psi);
 
   // Angular rate error
   h << (v_ref + 1.0 ) * t;
 
-  DMatrix Q(5,5);
-  Q(0,0) = 1.0;
-  Q(1,1) = 1.0;
-  Q(2,2) = 1.0;
-
-  Q(3,3) = 1.0;
-
-  Q(4,4) = 2.0;
+  BMatrix Q(5,5); Q.setAll(true);
+  // Q(0,0) = 1.0;
+  // Q(1,1) = 1.0;
+  // Q(2,2) = 1.0;
+  // Q(3,3) = 1.0;
+  // Q(4,4) = 2.0;
 
   // Terminal cost
   Function hN;
 
   // Distance errors
-  hN << path - yy;
+  hN << poly_d - yy;
   hN << l_prob * c_left_lane;
   hN << r_prob * c_right_lane;
 
   // Heading errors
-  hN << (2.0 * v_ref + 1.0 ) * (angle - psi);
+  hN << (2.0 * v_ref + 1.0 ) * (angle_d - psi);
 
-  DMatrix QN(4,4);
-  QN(0,0) = 1.0;
-  QN(1,1) = 1.0;
-  QN(2,2) = 1.0;
+  BMatrix QN(4,4); QN.setAll(true);
+  // QN(0,0) = 1.0;
+  // QN(1,1) = 1.0;
+  // QN(2,2) = 1.0;
+  // QN(3,3) = 1.0;
 
-  QN(3,3) = 1.0;
+  // Non uniform time grid
+  // First 5 timesteps are 0.05, after that it's 0.15
+  DMatrix numSteps(20, 1);
+  for (int i = 0; i < 5; i++){
+    numSteps(i) = 1;
+  }
+  for (int i = 5; i < 20; i++){
+    numSteps(i) = 3;
+  }
 
   // Setup Optimal Control Problem
   const double tStart = 0.0;
-  const double tEnd   = samplingTime * controlHorizon;
+  const double tEnd   = 2.5;
 
-  OCP ocp( tStart, tEnd, controlHorizon );
+  OCP ocp( tStart, tEnd, numSteps);
   ocp.subjectTo(f);
 
   ocp.minimizeLSQ(Q, h);
   ocp.minimizeLSQEndTerm(QN, hN);
 
+  // car can't go backward to avoid "circles"
   ocp.subjectTo( deg2rad(-90) <= psi <= deg2rad(90));
-  ocp.subjectTo( deg2rad(-25) <= delta <= deg2rad(25));
-  ocp.subjectTo( -0.1 <= t <= 0.1);
-  ocp.setNOD(18);
+  // more than absolute max steer angle
+  ocp.subjectTo( deg2rad(-50) <= delta <= deg2rad(50));
+  ocp.setNOD(17);
 
   OCPexport mpc(ocp);
   mpc.set( HESSIAN_APPROXIMATION, GAUSS_NEWTON );
@@ -120,6 +120,7 @@ int main( )
   mpc.set( INTEGRATOR_TYPE, INT_RK4 );
   mpc.set( NUM_INTEGRATOR_STEPS, 1 * controlHorizon);
   mpc.set( MAX_NUM_QP_ITERATIONS, 500);
+  mpc.set( CG_USE_VARIABLE_WEIGHTING_MATRIX, YES);
 
   mpc.set( SPARSE_QP_SOLUTION, CONDENSING );
   mpc.set( QP_SOLVER, QP_QPOASES );
@@ -129,7 +130,7 @@ int main( )
   mpc.set( GENERATE_MATLAB_INTERFACE, NO );
   mpc.set( GENERATE_SIMULINK_INTERFACE, NO );
 
-  if (mpc.exportCode( "mpc_export" ) != SUCCESSFUL_RETURN)
+  if (mpc.exportCode( "lib_mpc_export" ) != SUCCESSFUL_RETURN)
     exit( EXIT_FAILURE );
 
   mpc.printDimensionsQP( );

@@ -4,8 +4,6 @@ os.environ['FAKEUPLOAD'] = "1"
 from common.testing import phone_only
 from selfdrive.manager import manager_init, manager_prepare
 from selfdrive.manager import start_managed_process, kill_managed_process, get_running
-from selfdrive.manager import manage_baseui
-from selfdrive.config import CruiseButtons
 from functools import wraps
 import time
 
@@ -45,7 +43,7 @@ def with_processes(processes):
 #@phone_only
 #@with_processes(['controlsd', 'radard'])
 #def test_controls():
-#  from selfdrive.test.plant.plant import Plant
+#  from selfdrive.test.longitudinal_maneuvers.plant import Plant
 #
 #  # start the fake car for 2 seconds
 #  plant = Plant(100)
@@ -65,25 +63,25 @@ def with_processes(processes):
 @phone_only
 @with_processes(['loggerd', 'logmessaged', 'tombstoned', 'proclogd', 'logcatd'])
 def test_logging():
-  print "LOGGING IS SET UP"
+  print("LOGGING IS SET UP")
   time.sleep(1.0)
 
 @phone_only
 @with_processes(['visiond'])
 def test_visiond():
-  print "VISIOND IS SET UP"
+  print("VISIOND IS SET UP")
   time.sleep(5.0)
 
 @phone_only
 @with_processes(['sensord'])
 def test_sensord():
-  print "SENSORS ARE SET UP"
+  print("SENSORS ARE SET UP")
   time.sleep(1.0)
 
 @phone_only
 @with_processes(['ui'])
 def test_ui():
-  print "RUNNING UI"
+  print("RUNNING UI")
   time.sleep(1.0)
 
 # will have one thing to upload if loggerd ran
@@ -91,12 +89,5 @@ def test_ui():
 @phone_only
 @with_processes(['uploader'])
 def test_uploader():
-  print "UPLOADER"
+  print("UPLOADER")
   time.sleep(10.0)
-
-@phone_only
-def test_baseui():
-  manage_baseui(True)
-  time.sleep(10.0)
-  manage_baseui(False)
-

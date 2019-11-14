@@ -1,7 +1,6 @@
-#include <string>
 #include <vector>
 
-#include "common.h"
+#include "common_dbc.h"
 
 namespace {
 
@@ -23,4 +22,10 @@ const DBC* dbc_lookup(const std::string& dbc_name) {
 
 void dbc_register(const DBC* dbc) {
   get_dbcs().push_back(dbc);
+}
+
+extern "C" {
+  const DBC* dbc_lookup(const char* dbc_name) {
+    return dbc_lookup(std::string(dbc_name));
+  }
 }
